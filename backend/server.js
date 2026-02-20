@@ -2,44 +2,78 @@ const WebSocket = require('ws');
 const { computeTimeDomain } = require('./hrv');
 const { computeRisk } = require('./ai');
 
-const wss = new WebSocket.Server({ port: 8080 });
+/* ================= PORT (Railway kompatibilní) ================= */
+const PORT = process.env.PORT || 8080;
 
+/* ================= WEBSOCKET SERVER ================= */
+const wss = new WebSocket.Server({ port: PORT });
+
+console.log(`HUMAN ECG backend running on port ${PORT}`);
+
+/* ================= STAV ================= */
 let rrBuffer = [];
+const MAX_RR_BUFFER = 300;
 
-wss.on('connection', ws => {
+/* ================= HANDLING CONNECTIONS ================= */
 
-    ws.on('message', message => {
+wss.on('connection', (ws, req) => {
+
+    console.log("New connection");
+
+    ws.on('message', (message) => {
 
         let data;
 
-        try{
+        try {
             data = JSON.parse(message);
-        } catch {
+        } catch (err) {
+            console.log("Invalid JSON received");
             return;
         }
 
-        if(data.rr){
+        /* ================= RR BUFFER ================= */
+
+        if (data.rr && typeof data.rr === "number") {
             rrBuffer.push(data.rr);
-            if(rrBuffer.length > 300)
+
+            if (rrBuffer.length > MAX_RR_BUFFER) {
                 rrBuffer.shift();
+            }
         }
 
+        /* ================= HRV SERVER-SIDE ================= */
+
         const hrv = computeTimeDomain(rrBuffer);
-        const risk = computeRisk({...data, ...hrv});
+
+        /* ================= AI RISK ================= */
 
         const enriched = {
             ...data,
-            ...hrv,
-            risk
+            ...hrv
         };
 
-        wss.clients.forEach(client=>{
-            if(client.readyState === WebSocket.OPEN){
-                client.send(JSON.stringify(enriched));
-            }
-        });
+        enriched.risk = computeRisk(enriched);
+
+        /* ================= BROADCAST ================= */
+
+        broadcast(JSON.stringify(enriched));
     });
 
+    ws.on('close', () => {
+        console.log("Connection closed");
+    });
+
+    ws.on('error', (err) => {
+        console.log("Socket error:", err.message);
+    });
 });
 
-console.log("HUMAN ECG backend running on port 8080");
+/* ================= BROADCAST FUNCTION ================= */
+
+function broadcast(message) {
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+        }
+    });
+}
